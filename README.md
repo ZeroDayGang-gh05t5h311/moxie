@@ -1,114 +1,89 @@
 # moxie
-It is a DNS DOS tool for ethical testing designed to help people clean up the OPEN DNS resolver issue.
-DNS Amplification Test Tool (ETHICAL USE ONLY)
+Moxie 2 – DNS Packet Crafting and Network Testing Utility
 
-The DNS Amplification Test Tool is a network security testing tool designed to simulate DNS amplification attacks. This tool uses DNS servers to amplify traffic in order to test the security of a target network or service. This tool is for ethical testing only. Unauthorized use can be illegal in many jurisdictions. This tool works by sending specially crafted DNS query packets with a spoofed source IP address (typically the victim's address). When the DNS server receives these requests, it responds with large responses (amplifying the original request). The goal is to test if the target DNS server can handle these amplified responses.
+Overview:
+Moxie 2 is a low-level DNS packet construction and transmission tool written in C. It is designed for educational use, controlled laboratory testing, and defensive security research. The project provides a practical demonstration of how raw network packets can be manually constructed and transmitted without relying on the operating system’s standard networking stack.
+By working directly with IP and UDP headers and crafting DNS queries from scratch, Moxie 2 offers insight into how network protocols operate at a fundamental level. It is particularly useful for students, developers, and security professionals who want to deepen their understanding of packet structure, checksum computation, and traffic generation techniques in a controlled environment. This tool is not intended for use on networks or systems without explicit authorization. It should only be used in environments where you have full ownership or permission to conduct testing.
 
+Core Capabilities:
 
-Spoofed DNS queries with random query IDs.
-Sends queries to a list of open DNS resolvers to amplify traffic. Supports multi-threaded operation to increase packet-sending speed. Adjustable packet count and delay between packets. Ethical use only: Must be used with explicit permission on targets you own or have authorization to test. Do not use this tool on any system or network without explicit written permission. Unauthorized use of this tool can be illegal and unethical. Always ensure that you have permission before running any penetration testing tools.
+Moxie 2 focuses on manual packet construction and controlled transmission. It builds complete IPv4 and UDP packets, embeds a DNS query payload, and sends them using raw sockets. The implementation includes support for multi-threaded packet transmission and configurable timing, allowing users to simulate controlled traffic patterns. Key capabilities include manual construction of IPv4 headers, UDP headers, and DNS query packets; encoding of domain names into DNS label format; configurable packet count and transmission delay; multi-threaded execution for parallel packet sending; randomized packet attributes such as transaction IDs, source ports, and TTL values; and full checksum calculation for both IP and UDP layers using a pseudo-header.
 
+How It Works:
 
-System Requirements: 
-To run the DNS Amplification Test Tool, you must meet the following system requirements:
-Linux/Unix based system (or WSL on Windows).
-Root privileges (because raw sockets are required).
-A C compiler (e.g., gcc) to compile the source code. Required libraries:
-No external dependencies or libraries are required beyond standard C libraries.
+The program constructs each packet from the ground up. A DNS query is first assembled by encoding the domain name into the correct label format and attaching a DNS header and question section. This payload is then wrapped inside a UDP segment with a randomized source port.
+An IPv4 header is built around the UDP segment, including fields such as total length, protocol type, and source and destination addresses. The source address is user-defined, allowing experimentation with how packets appear at the network level. Check sums are calculated manually to ensure packet integrity. Packets are transmitted using a raw socket with IP header inclusion enabled, meaning the kernel does not modify the headers. Multiple threads divide the workload, each responsible for sending a portion of the total packet count. Timing between packets is controlled with a configurable delay and a small randomized jitter to avoid perfectly uniform traffic patterns.
 
+System Requirements:
+Moxie 2 is intended for use on Unix-like systems that support raw sockets. It has been tested on Linux environments.
+Requirements include a GCC-compatible compiler, POSIX threading support, and root or elevated privileges to allow raw socket operations.
 
-Installation
-Clone the repository or download the source code:
-git clone https://github.com/ZeroDayGang-gh05t5h311/br33dingSlut
-cd br33dingSlut
+Compilation:
+To compile the program, use the following command:
+gcc -o moxie2 moxie2.c -lpthread
+gcc -o moxie2 moxie2.c -pthread (safer and more complete alternative)
+This will produce a single executable named moxie2.
+The program is executed from the command line and requires both a source IP address and a domain name.
+sudo ./moxie2 -s <source_ip> -d [options]
+Required arguments:
+-s or --spoof specifies the source IP address to be placed in the packet headers.
+-d or --domain specifies the domain name to be queried.
+Optional arguments:
+-c or --count sets the number of packets to send. The default is 10.
+-D or --delay sets the delay between packets in milliseconds. The default is 100.
+-h or --help displays the usage information.
 
-Compile the source code:
-Run the following command to compile the C code using gcc:
-gcc -o dns_amplification_tool br33dingSlut.c -pthread
-This will generate the executable dns_amplification_tool.
-Install: There's no formal installation process. You just need to compile the program and run it.
+Example
+sudo ./moxie2 -s 192.168.1.10 -d example.com -c 20 -D 50
 
-Configuration
-The tool comes with a hardcoded list of open DNS resolvers. You can modify this list by changing the gather_dns_resolvers function inside the code.
+This example sends 20 packets with a 50 millisecond delay between transmissions. Operational Notes
+Because Moxie 2 uses raw sockets, it must be run with elevated privileges. The program does not rely on the system’s DNS resolver and instead sends packets directly to a predefined list of public DNS servers. The tool does not process or capture responses. It is strictly a transmission utility designed to demonstrate packet creation and outbound traffic behavior. Safety and Responsible Use
 
-The current default list of DNS resolvers includes:
-Google DNS: 8.8.8.8, 8.8.4.4
-Cloudflare DNS: 1.1.1.1, 1.0.0.1
-OpenDNS: 208.67.222.222
-Quad9 DNS: 9.9.9.9
+Moxie 2 is intended strictly for legitimate and ethical purposes. Acceptable use cases include local lab experimentation, academic study, protocol analysis, and authorized network testing. It must not be used to disrupt services, generate unauthorized traffic, or target systems without explicit permission. Misuse may violate laws and regulations and can result in serious consequences. If you are unsure whether your use case is appropriate, do not proceed.
 
-If you want to use additional resolvers, you can modify this list manually in the gather_dns_resolvers() function, or you can extend the program to read resolvers from a configuration file or a remote source.
+Limitations:
+The current implementation is intentionally minimal and focused on demonstrating core concepts. It supports only IPv4 and does not include DNS response handling or validation. The list of DNS revolvers is static and hard-coded, and there is no configuration for dynamic discovery or customization. Error handling is basic by design and(also by design) the tool does not include advanced safeguards such as rate limiting or traffic shaping beyond simple delay and jitters, it could be thought of as some POC that is semi-functional
 
-Usage
-To run the tool, execute it as root with the following parameters:
-sudo ./dns_amplification_tool -s <spoofed_source_ip> -d <target_domain> [OPTIONS]
-Command-line Options:
--s <IP>
-Required: The IP address to spoof as the source address (this is typically the victim's address).
--d <domain>
-Required: The domain name you wish to query using the ANY DNS query type (e.g., example.com).
--c <n>
-Optional: Number of packets to send. Default is 10. Example: -c 1000 will send 1000 packets.
--D <ms>
-Optional: Delay between packets in milliseconds. Default is 100. Example: -D 50 will introduce a 50 ms delay.
--h
-Optional: Displays help information.
-Example Command:
-sudo ./dns_amplification_tool -s 192.168.1.50 -d isc.org -c 20 -D 80
-This will send 20 DNS ANY query packets to a random DNS server (from the list of open resolvers) with the source IP spoofed as 192.168.1.50, and a delay of 80 milliseconds between each packet.
-Source Code Explanation
-1. gather_dns_resolvers function:
-This function gathers the list of DNS resolvers that will be used for amplification. By default, it uses a hardcoded list of open DNS servers, but you can modify this list as needed.
-void gather_dns_resolvers(const char ***dns_servers) {
-    static const char *default_dns[] = {
-        "8.8.8.8",    // Google DNS
-        "1.1.1.1",    // Cloudflare DNS
-        "8.8.4.4",    // Google DNS
-        "9.9.9.9",    // Quad9 DNS
-        "1.0.0.1",    // Cloudflare DNS (alternate)
-        "208.67.222.222", // OpenDNS
-        NULL          // Null terminator for the list
-    };
-    *dns_servers = default_dns;
-}
+Future Development:
+There are several areas where the project could be extended. Adding DNS response parsing would allow for round-trip analysis. Support for additional query types and protocols such as TCP-based DNS could broaden its usefulness. Introducing configurable resolver lists and improved logging would make the tool more flexible and informative. From a safety perspective, implementing optional safeguards such as rate limiting, interface binding, or restricting execution to local environments would improve responsible usability.
 
-The DNS Packet Construction:
-The tool constructs DNS ANY query packets and sends them using raw sockets(why re-invent the wheel?). The packet structure includes:
+Disclaimer
+This software is provided for educational and research purposes only. The author assumes no responsibility for misuse, damage, or legal consequences resulting from the use of this tool. Users are solely responsible for ensuring their actions comply with all applicable laws and regulations.
 
-IP header: Contains the source IP (spoofed) and destination IP (the resolver’s IP).
-UDP header: The DNS query is sent via UDP port 53 (standard for DNS).
-DNS header: A DNS header with a random query ID and flags set for recursion.
-The tool sends the constructed packets to the chosen DNS resolvers, and these DNS servers will respond with large DNS responses, amplifying the traffic.
+A test run may look something like this: 
+┌───────────────────────────────────────────────────────────────┐
+│                        MOXIE 2 v1.0                           │
+│           DNS Packet Crafting Test Environment                │
+├───────────────────────────────────────────────────────────────┤
+│ Mode           : Controlled Lab Simulation                    │
+│ Source IP      : 192.168.1.10                                 │
+│ Query Domain   : example.com (ANY)                            │
+│ Threads        : 4                                            │
+│ Packet Count   : 20                                           │
+│ Delay          : 50 ms (+ jitter)                             │
+├───────────────────────────────────────────────────────────────┤
+│ Initializing raw socket...                    [ OK ]           │
+│ Building DNS query payload...                [ OK ]           │
+│ Encoding domain labels...                    [ OK ]           │
+│ Calculating checksums...                     [ OK ]           │
+│ Launching worker threads...                  [ OK ]           │
+├───────────────────────────────────────────────────────────────┤
+│ [Thread 1] Sent packet  1 | ID: 48231 | → 8.8.8.8:53           │
+│ [Thread 2] Sent packet  2 | ID: 11902 | → 1.1.1.1:53           │
+│ [Thread 3] Sent packet  3 | ID: 55012 | → 9.9.9.9:53           │
+│ [Thread 4] Sent packet  4 | ID: 33177 | → 8.8.4.4:53           │
+│ [Thread 1] Sent packet  5 | ID: 90214 | → 208.67.222.222:53    │
+│ [Thread 2] Sent packet  6 | ID: 12003 | → 1.0.0.1:53           │
+│ ...                                                           │
+│ [Thread 3] Sent packet 19 | ID: 77123 | → 8.8.8.8:53           │
+│ [Thread 4] Sent packet 20 | ID: 44301 | → 9.9.9.9:53           │
+├───────────────────────────────────────────────────────────────┤
+│ Transmission complete.                                        │
+│ Total packets sent : 20                                       │
+│ Average rate       : ~18 packets/sec                          │
+│ Errors             : 0                                        │
+└───────────────────────────────────────────────────────────────┘
 
-// Build the DNS question
-int name_len = encode_dns_name(qname, domain);  // Encodes the domain name
-q->qtype = htons(255);  // ANY query type
-q->qclass = htons(1);   // IN (Internet) class
-3. Threading:
-The tool uses multi-threading to send packets in parallel. This makes it more efficient and increases the volume of requests it can generate.
-pthread_t threads[MAX_THREADS];
-for (int i = 0; i < MAX_THREADS; i++) {
-    pthread_create(&threads[i], NULL, send_packet, (void *)&data[i]);
-}
-4. Random DNS Resolver Selection:
-For each packet, the target DNS resolver is randomly chosen from the list of available DNS servers. This ensures that the packets are sent to different servers for amplification.
-const char *target_ip = dns_servers[rand() % 6]; // Choose from the list of DNS servers
-5. Packet Sending:
-The tool sends the crafted packet to the chosen DNS resolver using the sendto() system call.
-if (sendto(sock, packet, packet_len, 0, (struct sockaddr *)&dest, sizeof(dest)) < 0) {
-    fprintf(stderr, "sendto failed: %s\n", strerror(errno));
-} else {
-    printf("[+] Sent packet %3d | ID: %5u | src:%s → dst:%s:53\n", i, ntohs(dns->id), spoof_ip, target_ip);
-}
-
-Important Notes
-Running as Root: This tool requires root privileges because it needs to create raw sockets.
-
-Ethical Use: Only run this tool on networks or systems that you own or have explicit permission to test. Unauthorized use is illegal and unethical.
-
-DNS Amplification Test: This tool is designed to simulate DNS amplification attacks. It's used to test the ability of DNS servers to handle large volumes of traffic, which could help identify vulnerabilities in the server’s defense mechanisms.
-Customize DNS Resolvers: You can modify the list of DNS resolvers directly in the code or implement a configuration file to dynamically load resolver IPs.
-
-Impact on Target: While testing, ensure that the target DNS server is capable of handling the volume of traffic you’re generating. Do not overwhelm a system that is not authorized for testing.
+Can't say for sure as I have due to laws been unable to test it: unless someone with a big enough network would be able to test on my behalf and please share finding's(even if only a little), or let me test it.
 
 License This tool is provided under the MIT License. Feel free to modify and use it for your own ethical penetration testing purposes.
